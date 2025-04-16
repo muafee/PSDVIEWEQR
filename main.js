@@ -7,6 +7,11 @@ const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
 const statAsync = promisify(fs.stat);
 const Store = require('electron-store');
+const { createCanvas, Image } = require('canvas');
+const { initializeCanvas } = require('ag-psd');
+
+// Initialiser ag-psd avec node-canvas
+initializeCanvas(createCanvas, Image);
 
 // Configuration persistante
 const store = new Store();
@@ -26,7 +31,8 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      sandbox: false
     },
     show: false,
     backgroundColor: '#1e1e1e', // Fond sombre pour un look pro
@@ -366,64 +372,165 @@ function addToRecentFiles(filePath) {
 async function generateThumbnail(filePath, width = 200, height = 200) {
   try {
     const ext = path.extname(filePath).toLowerCase();
-    
-    // Selon le type de fichier, utilise différentes méthodes de génération
     let imageBuffer;
     
     if (ext === '.psd') {
-      // Utilise ag-psd pour les fichiers PSD
-      const { readPsd } = require('ag-psd');
-      const buffer = await readFileAsync(filePath);
-      const psd = readPsd(buffer);
-      
-      // Convertit l'image composite du PSD en un buffer PNG
-      // Note: Ceci est une simplification, une implémentation complète
-      // nécessiterait de composer les calques
-      const { width: psdWidth, height: psdHeight } = psd;
-      const canvas = new OffscreenCanvas(psdWidth, psdHeight);
-      const ctx = canvas.getContext('2d');
-      
-      // Code pour dessiner l'image PSD sur le canvas...
-      
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
-      imageBuffer = Buffer.from(await blob.arrayBuffer());
-    } else if (ext === '.tif' || ext === '.tiff') {
-      // Utilise utif pour les fichiers TIFF
-      const UTIF = require('utif');
-      const buffer = await readFileAsync(filePath);
-      const ifds = UTIF.decode(buffer);
-      UTIF.decodeImages(buffer, ifds);
-      
-      // Obtient la première image
-      const rgba = UTIF.toRGBA8(ifds[0]);
-      
-      // Utilise sharp pour redimensionner
-      imageBuffer = await sharp(rgba, {
-        raw: {
-          width: ifds[0].width,
-          height: ifds[0].height,
-          channels: 4
+      try {
+        // Utiliser ag-psd pour traiter les fichiers PSD
+        const { readPsd, toCanvas } = require('ag-psd');
+        const buffer = await readFileAsync(filePath);
+        const psd = readPsd(buffer);
+        
+        // Créer un canvas avec les dimensions du PSD
+        const canvas = createCanvas(psd.width, psd.height);
+        const ctx = canvas.getContext('2d');
+        
+        // Dessiner le PSD sur le canvas
+        if (psd.children && psd.children.length > 0) {
+          // S'il y a des calques, dessiner tous les calques visibles
+          toCanvas(ctx, psd);
+        } else {
+          // Sinon, utiliser l'image composite
+          const imageData = ctx.createImageData(psd.width, psd.height);
+          imageData.data.set(psd.imageData);
+          ctx.putImageData(imageData, 0, 0);
         }
-      }).toBuffer();
+        
+        // Convertir le canvas en buffer
+        const pngBuffer = canvas.toBuffer('image/png');
+        
+        // Redimensionner avec sharp
+        imageBuffer = await sharp(pngBuffer)
+          .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+          .toBuffer();
+      } catch (err) {
+        console.error('Erreur lors du traitement du PSD:', err);
+        
+        // Fallback en cas d'erreur
+        imageBuffer = await sharp({
+          create: {
+            width: width,
+            height: height,
+            channels: 4,
+            background: { r: 80, g: 120, b: 200, alpha: 1 }
+          }
+        })
+        .composite([
+          {
+            input: {
+              text: {
+                text: 'PSD',
+                font: 'sans',
+                fontSize: 48,
+                rgba: true
+              }
+            },
+            gravity: 'center'
+          }
+        ])
+        .png()
+        .toBuffer();
+      }
+    } else if (ext === '.tif' || ext === '.tiff') {
+      try {
+        // Pour les TIFF, utiliser sharp directement
+        imageBuffer = await sharp(filePath)
+          .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+          .toBuffer();
+      } catch (err) {
+        console.error('Erreur lors du traitement du TIFF:', err);
+        // Fallback pour les TIFF
+        imageBuffer = await sharp({
+          create: {
+            width: width,
+            height: height,
+            channels: 4,
+            background: { r: 200, g: 200, b: 100, alpha: 1 }
+          }
+        })
+        .png()
+        .toBuffer();
+      }
     } else {
-      // Pour les autres formats, utilise sharp directement
+      // Pour les formats standards, utilise sharp directement
       imageBuffer = await sharp(filePath)
         .resize(width, height, { fit: 'inside', withoutEnlargement: true })
         .toBuffer();
     }
     
-    // Redimensionne la vignette
-    const thumbnail = await sharp(imageBuffer)
-      .resize(width, height, { fit: 'inside', withoutEnlargement: true })
-      .toBuffer();
-    
-    return thumbnail.toString('base64');
+    // Retourner la vignette en base64
+    return imageBuffer.toString('base64');
   } catch (error) {
     console.error(`Erreur lors de la génération de la vignette: ${error}`);
-    // Retourne une vignette par défaut en cas d'erreur
-    return null;
+    
+    // En cas d'échec, générer une vignette par défaut
+    try {
+      const fallbackBuffer = await sharp({
+        create: {
+          width: width,
+          height: height,
+          channels: 4,
+          background: { r: 150, g: 150, b: 150, alpha: 1 }
+        }
+      })
+      .png()
+      .toBuffer();
+      
+      return fallbackBuffer.toString('base64');
+    } catch (fallbackError) {
+      console.error('Erreur même lors de la création de vignette de secours:', fallbackError);
+      return null;
+    }
   }
 }
+
+// Fonction pour récupérer l'image PSD complète
+async function getPsdImage(filePath) {
+  try {
+    const { readPsd, toCanvas } = require('ag-psd');
+    const buffer = await readFileAsync(filePath);
+    const psd = readPsd(buffer);
+    
+    // Créer un canvas avec les dimensions du PSD
+    const canvas = createCanvas(psd.width, psd.height);
+    const ctx = canvas.getContext('2d');
+    
+    // Dessiner le PSD sur le canvas
+    if (psd.children && psd.children.length > 0) {
+      toCanvas(ctx, psd);
+    } else if (psd.imageData) {
+      const imageData = ctx.createImageData(psd.width, psd.height);
+      imageData.data.set(psd.imageData);
+      ctx.putImageData(imageData, 0, 0);
+    }
+    
+    // Convertir le canvas en PNG
+    const pngBuffer = canvas.toBuffer('image/png');
+    
+    // Renvoyer les données d'image et les métadonnées
+    return {
+      imageData: pngBuffer.toString('base64'),
+      width: psd.width,
+      height: psd.height,
+      layersCount: psd.children ? psd.children.length : 0,
+      // Ajouter d'autres métadonnées PSD ici si nécessaire
+    };
+  } catch (error) {
+    console.error(`Erreur lors de l'extraction du PSD: ${error}`);
+    throw error;
+  }
+}
+
+
+// Gestionnaire pour obtenir le contenu PSD
+ipcMain.handle('get-psd-image', async (event, filePath) => {
+  try {
+    return await getPsdImage(filePath);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération du PSD: ${error}`);
+    throw error;
+  }
+});
 
 // Gestionnaires d'événements IPC
 ipcMain.handle('read-file', async (event, filePath) => {
@@ -507,6 +614,15 @@ ipcMain.handle('show-save-dialog', async (event, options) => {
   });
   
   return result;
+});
+
+// Ajouter ces gestionnaires d'événements
+ipcMain.on('get-basename', (event, filePath) => {
+  event.returnValue = path.basename(filePath);
+});
+
+ipcMain.on('get-extension', (event, filePath) => {
+  event.returnValue = path.extname(filePath);
 });
 
 // Lifecycle
