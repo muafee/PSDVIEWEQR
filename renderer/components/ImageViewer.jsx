@@ -18,49 +18,71 @@ const ImageViewer = ({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [isLoading, setIsLoading] = useState(false);
   
-  // Charger l'image quand elle change
-  useEffect(() => {
-    if (!image) return;
+ // Charger l'image quand elle change
+useEffect(() => {
+  if (!image) return;
+  
+  const loadImage = async () => {
+    setIsLoading(true);
+    setImageError(false);
     
-    const loadImage = async () => {
-      setIsLoading(true);
-      setImageError(false);
+    try {
+      let imageUrl;
+      const ext = image.extension.toLowerCase();
       
-      try {
-        // Pour les formats spéciaux (PSD, EPS, TIFF), nous aurions besoin
-        // d'une logique de chargement spécifique qui utiliserait Electron
-        // Dans cette démonstration, nous chargeons simplement l'image par URL
-        
-        let imageUrl;
-        const ext = image.extension.toLowerCase();
-        
-        if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
-          // Pour les formats standards, nous pouvons utiliser le path directement
-          imageUrl = `file://${image.path}`;
-        } else {
-          // Pour les formats spéciaux, on utiliserait un traitement via Electron
-          // Pour la démo, on utilise la vignette générée
+      if (ext === 'psd') {
+        // Pour les PSD, utiliser notre nouvelle fonction
+        try {
+          const psdData = await window.electronAPI.getPsdImage(image.path);
+          imageUrl = `data:image/png;base64,${psdData.imageData}`;
+          
+          // Mettre à jour les métadonnées avec les dimensions réelles
+          setImageData({
+            url: imageUrl,
+            width: psdData.width,
+            height: psdData.height,
+            layersCount: psdData.layersCount
+          });
+        } catch (psdError) {
+          console.error("Erreur lors du chargement du PSD:", psdError);
+          // Fallback à la vignette
           imageUrl = image.thumbnail;
+          setImageData({
+            url: imageUrl,
+            width: image.metadata?.width || 0,
+            height: image.metadata?.height || 0
+          });
         }
-        
+      } else if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
+        // Pour les formats standards, utiliser le path directement
+        imageUrl = `file://${image.path}`;
         setImageData({
           url: imageUrl,
           width: image.metadata?.width || 0,
           height: image.metadata?.height || 0
         });
-        
-        // Réinitialiser la position
-        setPosition({ x: 0, y: 0 });
-      } catch (error) {
-        console.error(`Erreur de chargement de l'image: ${error}`);
-        setImageError(true);
-      } finally {
-        setIsLoading(false);
+      } else {
+        // Pour les autres formats spéciaux, utiliser la vignette
+        imageUrl = image.thumbnail;
+        setImageData({
+          url: imageUrl,
+          width: image.metadata?.width || 0,
+          height: image.metadata?.height || 0
+        });
       }
-    };
-    
-    loadImage();
-  }, [image]);
+      
+      // Réinitialiser la position
+      setPosition({ x: 0, y: 0 });
+    } catch (error) {
+      console.error(`Erreur de chargement de l'image: ${error}`);
+      setImageError(true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  loadImage();
+}, [image]);
   
   // Gestion du déplacement de l'image
   const handleMouseDown = (e) => {
