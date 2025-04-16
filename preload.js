@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Exposer des fonctions d'API sécurisées au renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+
+  getPsdImage: async (filePath) => {
+    return await ipcRenderer.invoke('get-psd-image', filePath);
+  },
+  
   // Gestionnaires de fichiers
   openFile: async (filePath) => {
     return await ipcRenderer.invoke('read-file', filePath);
@@ -19,7 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return await ipcRenderer.invoke('show-save-dialog', options);
   },
   
-  // Gestionnaires d'événements - voici la partie importante
+  // Gestionnaires d'événements
   onFileOpened: (callback) => {
     ipcRenderer.on('file-opened', (event, filePath) => callback(filePath));
     return () => ipcRenderer.removeListener('file-opened', callback);
@@ -33,6 +38,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuAction: (action, callback) => {
     ipcRenderer.on(action, callback);
     return () => ipcRenderer.removeListener(action, callback);
+  },
+
+  // Fonctions utilitaires pour les fichiers
+  // Au lieu d'utiliser path directement, nous demandons au processus principal de faire ces opérations
+  getBasename: (filePath) => {
+    return ipcRenderer.sendSync('get-basename', filePath);
+  },
+  getExtension: (filePath) => {
+    return ipcRenderer.sendSync('get-extension', filePath);
   },
 
   openFileDialog: () => ipcRenderer.send('open-file-dialog'),
